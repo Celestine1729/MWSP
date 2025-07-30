@@ -88,7 +88,6 @@ def load_data(dataset, degree_as_tag=False):
     
     if not os.path.exists(dataset_path):
         print(f"Error: Dataset not found at {dataset_path}")
-        print("Please download from: https://ls11-www.cs.tu-dortmund.de/staff/morris/graphkerneldatasets")
         sys.exit(1)
     
     print(f"Loading dataset: {dataset_path}")
