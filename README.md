@@ -28,8 +28,7 @@ This implementation is optimized for both laptop-scale experimentation (small da
  ### Clone repository:
 
 ```
-git clone https://github.com/yourusername/multiscale-wasserstein-graph-kernel.git
-cd multiscale-wasserstein-graph-kernel
+git clone https://github.com/celestine1729/MWSP.git
 ```
 ### Install dependencies:
 ```
