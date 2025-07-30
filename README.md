@@ -13,7 +13,7 @@ The Multiscale Wasserstein Shortest Path Kernel (MWSP) is an advanced graph kern
 This implementation is optimized for both laptop-scale experimentation (small datasets) and cluster-scale execution (large datasets with 1000+ graphs).
 
 
-## Installation
+## Installation & Usage
 
 ### Enviroment Setup
   ```
@@ -77,7 +77,7 @@ python MWSPO_final.py YOUR_DATASET \
 
 ```
 # Single GPU run
-python MWSPO_final.py MUTAG --maxh 3 --depth 2
+python MWSPO.py MUTAG --maxh 3 --depth 2
 
 # Cluster submission
 sbatch run_cluster.sh   # enter the database name in the .sh file.
