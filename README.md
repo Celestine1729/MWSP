@@ -15,57 +15,93 @@ This implementation is optimized for both laptop-scale experimentation (small da
 
 ## Installation
 
-### Requirements
-- Python 3.7+
-- Required packages:
+### Enviroment Setup
   ```
-  pip install numpy scipy networkx scikit-learn gensim POT joblib
+  python -m venv mwspo_env
+  source mwspo_env/bin/activate
+
+  pip install torch==2.0.1+cu117 torch-geometric -f https://data.pyg.org/whl/torch-2.0.0+cu117.html
+  pip install cugraph-cu11x cudf-cu11x cuml-cu11x --extra-index-url https://pypi.nvidia.com
+  pip install geomloss scikit-learn networkx gensim joblib psutil argparse
   ```
 
-  
-## Setup
 
  ### Clone repository:
 
 ```
 git clone https://github.com/celestine1729/MWSP.git
 ```
-### Install dependencies:
+### database file structure:
 ```
-pip install -r requirements.txt
+  datasets/
+└── YOUR_DATASET/
+    ├── dataset.txt
+    └── (optional metadata files)
+  
+```
+
+### run_cluster.sh
+```
+#!/bin/bash
+#SBATCH --job-name=MWSPO
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=2
+#SBATCH --cpus-per-task=48
+#SBATCH --mem=250G
+#SBATCH --time=24:00:00
+#SBATCH --gres=gpu:tesla_v100:2
+#SBATCH --output=logs/%x_%j.log
+
+# Cluster environment setup
+module purge
+module load cuda/11.7
+module load python/3.10
+module load gcc/9.3.0
+
+# Python environment
+python -m venv venv
+source venv/bin/activate
+pip install torch==2.0.1+cu117 torch-geometric -f https://data.pyg.org/whl/torch-2.0.0+cu117.html
+pip install cugraph-cu11x cudf-cu11x cuml-cu11x --extra-index-url https://pypi.nvidia.com
+pip install geomloss scikit-learn networkx gensim joblib psutil argparse
+
+# Execute with optimal parameters for 1000+ graphs
+python MWSPO_final.py YOUR_DATASET \
+  --maxh 3 \
+  --depth 2
+  
 ```
 
 
-### Usage
-```
-python MWSPO_optimized.py DATASET_NAME MAXH DEPTH [N_JOBS]
-```
 ### Example
 
 ```
-# Run on MUTAG dataset using 4 cores
-python MWSPO_optimized.py MUTAG 3 2 4
+# Single GPU run
+python MWSPO_final.py MUTAG --maxh 3 --depth 2
+
+# Cluster submission
+sbatch run_cluster.sh   # enter the database name in the .sh file.
 ```
 ### Expected Output
 
 ```
-==================================================
-Experiment: MUTAG | k=2 | d=1
-==================================================
-Loading dataset: ./datasets/MUTAG/MUTAG.txt
-Loaded 188 graphs
-Number of classes: 2
-Number of unique node tags: 7
-Computing 17578 Wasserstein distances using 4 cores...
-[Parallel]: 100%|██████████| 17578/17578 [01:15<00:00]
-Distance matrix computed in 75.32 seconds
-Starting 10-fold cross-validation...
-Fold 1: Accuracy = 0.8947 | Time = 0.12s
-Fold 2: Accuracy = 0.8421 | Time = 0.11s
-...
-Fold 10: Accuracy = 0.8684 | Time = 0.10s
+============================================================
+MWSPO Graph Kernel Experiment: REDDIT-BINARY
+Configuration: maxh=3, depth=2
+Hardware: 2 GPUs, 96 CPUs
+Memory: 256.0GB RAM
+============================================================
+Loading REDDIT-BINARY from datasets/REDDIT-BINARY/REDDIT-BINARY.txt
+Loaded 2000 graphs | Classes: 2 | Node features: 7
+[RESOURCE] Data Loading              |    12.5s | RAM:  15.3GB | GPU:   0.0GB
+[RESOURCE] Feature Extraction        |   184.2s | RAM:  42.1GB | GPU:  18.7GB
+[RESOURCE] Wasserstein Distance      |  2174.8s | RAM: 182.4GB | GPU:  28.7GB
+[RESOURCE] Kernel Construction       |     0.1s | RAM:   0.0GB | GPU:   0.0GB
+[RESOURCE] SVM Training              |   324.7s | RAM:   4.2GB | GPU:   0.0GB
 
-Results: 87.37% ± 3.21%
+Fold 1: Accuracy = 0.874
+...
+Final Accuracy: 86.42% ± 1.87%
 ```
 
 ## Support
