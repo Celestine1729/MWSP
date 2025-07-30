@@ -23,7 +23,7 @@ This implementation is optimized for both laptop-scale experimentation (small da
   ```
 
   
-  ## Setup
+## Setup
 
  ### Clone repository:
 
