@@ -124,5 +124,5 @@ Final Accuracy: 84.00% ± 1.52%
 
 ## Support
 
-For questions or issues, please open a GitHub issue or contact AlirezaAhmadi@gmail.com.
+For questions or issues, please open a GitHub issue or contact Celestine1729@proton.me
 
