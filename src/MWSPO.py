@@ -1,15 +1,9 @@
 """MWSPO.py - Memory-Optimized Multiscale Wasserstein Shortest Path Graph Kernel
-
-Key Memory Optimizations:
-1. Hash-based Path Representation: Replaces string paths with fixed-size hashes
-2. Sparse Feature Matrices: Uses scipy.sparse instead of dense matrices
-3. Fixed Feature Dimension: Prevents vocabulary explosion with hashing trick
-4. Incremental Processing: Handles graphs sequentially to avoid full-dataset storage
-5. Explicit Memory Management: Aggressive garbage collection and del statements
+    July 2025 , by Celestine
 
 Designed for cluster execution with:
 - 256GB RAM
-- 2× Tesla V100 GPUs
+- 2x Tesla V100 GPUs
 - Large datasets (1000+ graphs)
 """
 
@@ -26,6 +20,7 @@ import networkx as nx
 from scipy.sparse import lil_matrix, csr_matrix
 from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold
+from breadth_first_search import bfs_edges
 from sklearn.metrics import accuracy_score
 from joblib import Parallel, delayed
 import multiprocessing
@@ -55,7 +50,7 @@ MAXH_LIMIT = 3
 DEPTH_LIMIT = 2
 """int: Maximum shortest path depth"""
 
-FEATURE_DIM = 2**20  # 1,048,576 features
+FEATURE_DIM = 2**20  # 1,048,576 features 
 """int: Fixed feature dimension for hashing trick (prevents memory explosion)"""
 
 # ========================== RESOURCE MONITOR ==========================
@@ -64,7 +59,7 @@ class ResourceMonitor:
     
     Usage:
         with ResourceMonitor("Process Name"):
-            # Your code here
+            # code block to monitor
         # Automatically prints resource report
     
     Measures:
@@ -93,7 +88,7 @@ class ResourceMonitor:
                 mem = torch.cuda.max_memory_allocated(device) / (1024**3)
                 gpu_mem = max(gpu_mem, mem)
         
-        # New: Monitor current process memory
+        # Monitor current process memory
         proc = psutil.Process()
         current_ram = proc.memory_info().rss / (1024**3)
         
@@ -137,17 +132,17 @@ def load_data(dataset, degree_as_tag=False):
     """
     graphs = []
     label_dict = {}
-    path = f'datasets/{dataset}/{dataset}.txt'
+    path = f'datasets/{dataset}/{dataset}.txt' # Adjust path as needed
     
     if not os.path.exists(path):
-        sys.exit(f"Error: Missing dataset at {path}")
+        sys.exit(f"Error: Missing dataset at {path}") # Ensure path is correct
     
     print(f"Loading {dataset} from {path}")
     with open(path, 'r') as f:
         n_graphs = int(f.readline().strip())
-        for _ in range(n_graphs):
+        for _ in range(n_graphs): 
             n_nodes, label = map(int, f.readline().split())
-            if label not in label_dict:
+            if label not in label_dict: 
                 label_dict[label] = len(label_dict)
             
             G = nx.Graph()
@@ -162,7 +157,6 @@ def load_data(dataset, degree_as_tag=False):
             
             graphs.append(GraphContainer(G, label, tags))
     
-    # Feature engineering
     all_tags = set(tag for g in graphs for tag in g.node_tags)
     tag2idx = {tag: i for i, tag in enumerate(sorted(all_tags))}
     
@@ -181,7 +175,7 @@ def load_data(dataset, degree_as_tag=False):
     return graphs, len(label_dict)
 
 # ====================== WASSERSTEIN COMPUTATION ======================
-def sliced_wasserstein(X, Y, projections=100):
+def sliced_wasserstein(X, Y, projections=100): 
     """GPU-accelerated sliced Wasserstein distance
     
     Approximates Wasserstein distance in O(d(n+m)) time using random projections
@@ -203,18 +197,16 @@ def sliced_wasserstein(X, Y, projections=100):
     return torch.mean(torch.abs(X_proj - Y_proj))
 
 def compute_wasserstein(embeddings):
-    """Compute pairwise Wasserstein distances
+    """
     
-    Hybrid strategy:
-    - Small graphs: Exact Sinkhorn
-    - Large graphs: Sliced approximation
-    - Automatic subsampling for large graphs
-    
+    Computes the pairwise Wasserstein distances between graph embeddings.
+
     Args:
-        embeddings: List of sparse embedding matrices
-        
+        embeddings (list of csr_matrix): List of sparse node-feature matrices for each graph.
+
     Returns:
-        np.ndarray: Distance matrix (n_graphs x n_graphs)
+        np.ndarray: Symmetric matrix of Wasserstein distances (n_graphs x n_graphs).
+    
     """
     n = len(embeddings)
     M = np.zeros((n, n))
@@ -255,15 +247,24 @@ def compute_wasserstein(embeddings):
     
     all_results = []
     if USE_GPU and GPU_DEVICES:
-        # Distribute batches across GPUs
+        # Corrected GPU distribution logic
         batches_per_gpu = (len(batches) + len(GPU_DEVICES) - 1) // len(GPU_DEVICES)
-        with Parallel(n_jobs=len(GPU_DEVICES), backend="threading") as parallel:
+        
+        # Create GPU assignment plan
+        gpu_assignments = []
+        for gpu_idx in range(len(GPU_DEVICES)):
+            start_idx = gpu_idx * batches_per_gpu
+            end_idx = min((gpu_idx + 1) * batches_per_gpu, len(batches))
+            if start_idx < len(batches):
+                gpu_assignments.append((GPU_DEVICES[gpu_idx], batches[start_idx:end_idx]))
+        
+        # Process in parallel
+        with Parallel(n_jobs=len(gpu_assignments), backend="threading") as parallel:
             results = parallel(
-                delayed(process_batch)(
-                    batches[i:i+batches_per_gpu],
-                    GPU_DEVICES[idx % len(GPU_DEVICES)]
-                ) for idx, i in enumerate(range(0, len(batches), batches_per_gpu))
-            all_results = [res for batch in results for res in batch]
+                delayed(lambda args: [process_batch(batch, args[0]) for batch in args[1]])(assignment)
+                for assignment in gpu_assignments
+            )
+            all_results = [res for gpu_results in results for batch_results in gpu_results for res in batch_results]
     else:
         # CPU fallback
         device = torch.device('cpu')
@@ -436,6 +437,7 @@ def build_embeddings(graphs, maxh, depth):
                             h = path_to_feature_index(path_str, labels)
                             emb[node, h] += 1
                 except Exception as e:
+                    print(f"The shortest path computation failed for node {node}: {str(e)}")
                     # Skip problematic nodes
                     continue
             
@@ -527,7 +529,7 @@ if __name__ == "__main__":
     print("="*70)
     
     if not GPU_DEVICES:
-        print("WARNING: No GPUs detected - falling back to CPU mode")
+        print("INFO: Running in CPU mode (no GPUs detected)")
     
     # Enforce safety limits
     run_experiment(

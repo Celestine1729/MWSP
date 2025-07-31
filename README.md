@@ -85,23 +85,41 @@ sbatch run_cluster.sh   # enter the database name in the .sh file.
 ### Expected Output
 
 ```
-============================================================
+======================================================================
 MWSPO Graph Kernel Experiment: REDDIT-BINARY
 Configuration: maxh=3, depth=2
-Hardware: 2 GPUs, 96 CPUs
+Feature Dimension: 1048576 (fixed)
+Hardware: 2 GPUs, 64 CPUs
 Memory: 256.0GB RAM
-============================================================
+======================================================================
 Loading REDDIT-BINARY from datasets/REDDIT-BINARY/REDDIT-BINARY.txt
-Loaded 2000 graphs | Classes: 2 | Node features: 7
-[RESOURCE] Data Loading              |    12.5s | RAM:  15.3GB | GPU:   0.0GB
-[RESOURCE] Feature Extraction        |   184.2s | RAM:  42.1GB | GPU:  18.7GB
-[RESOURCE] Wasserstein Distance      |  2174.8s | RAM: 182.4GB | GPU:  28.7GB
-[RESOURCE] Kernel Construction       |     0.1s | RAM:   0.0GB | GPU:   0.0GB
-[RESOURCE] SVM Training              |   324.7s | RAM:   4.2GB | GPU:   0.0GB
+Loaded 1000 graphs | Classes: 2 | Node features: 12
 
-Fold 1: Accuracy = 0.874
-...
-Final Accuracy: 86.42% ± 1.87%
+[RESOURCE] Data Loading            |    12.3s | RAM: +   1.2GB (Total:  3.2GB) | GPU:   0.0GB
+[RESOURCE] BFS Level 1             |   142.5s | RAM: +   2.5GB (Total:  5.7GB) | GPU:   1.2GB
+[RESOURCE] BFS Level 2             |   158.2s | RAM: +   1.8GB (Total:  7.5GB) | GPU:   1.5GB
+[RESOURCE] Path Extraction         |   225.7s | RAM: +   4.0GB (Total: 11.5GB) | GPU:   2.0GB
+Generated embeddings: 1000 graphs
+Feature dimension: 1048576 (fixed)
+[RESOURCE] Feature Extraction      |   568.4s | RAM: +   9.5GB (Total: 13.5GB) | GPU:   2.0GB
+
+Computing 499500 distances on 2 GPUs
+[RESOURCE] Wasserstein Distance    |  1204.8s | RAM: +  15.0GB (Total: 28.5GB) | GPU:  10.0GB
+[RESOURCE] Kernel Construction     |     0.1s | RAM: +   0.0GB (Total: 28.5GB) | GPU:   0.0GB
+
+[RESOURCE] SVM Training            |    45.2s | RAM: +   0.5GB (Total: 29.0GB) | GPU:   0.0GB
+Fold 1: Accuracy = 0.8500
+Fold 2: Accuracy = 0.8200
+Fold 3: Accuracy = 0.8700
+Fold 4: Accuracy = 0.8400
+Fold 5: Accuracy = 0.8300
+Fold 6: Accuracy = 0.8600
+Fold 7: Accuracy = 0.8500
+Fold 8: Accuracy = 0.8100
+Fold 9: Accuracy = 0.8400
+Fold 10: Accuracy = 0.8300
+
+Final Accuracy: 84.00% ± 1.52%
 ```
 
 ## Support
