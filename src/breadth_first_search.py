@@ -1,7 +1,9 @@
-"""breadth_first_search.py - Custom BFS implementation for graph feature extraction
+"""breadth_first_search.py - Optimized BFS implementation
 
-Implements a BFS variant that respects node labels during traversal, 
-enabling label-aware path extraction for graph kernels.
+Memory Optimization:
+- Pre-stores neighbor lists to reduce generator overhead
+- Uses list appends instead of generators for small graphs
+- Minimal temporary storage
 """
 
 import networkx as nx
@@ -9,30 +11,26 @@ import networkx as nx
 def bfs_edges(G, node_labels, source, depth_limit=None):
     """Label-aware BFS edge generator
     
-    Performs breadth-first search while respecting node labels, producing
-    edges in BFS order. This is critical for consistent feature extraction
-    across isomorphic graph structures.
-    
     Args:
         G: NetworkX graph
-        node_labels: List of labels for each node
-        source: Starting node for BFS
-        depth_limit: Maximum depth to traverse
+        node_labels: List of node labels
+        source: Starting node
+        depth_limit: Max BFS depth
         
     Yields:
-        tuple: (parent, child) edge tuples in BFS order
+        tuple: (parent, child) edges in BFS order
     """
     visited = {source}
-    queue = [(source, 0, iter(G[source]))]
+    queue = [(source, 0, list(G[source]))]  # Pre-store neighbors
+    idx = 0  # Pointer instead of popping
     
-    while queue:
-        parent, depth, children = queue[0]
-        try:
-            child = next(children)
+    while idx < len(queue):
+        parent, depth, children = queue[idx]
+        for child in children:
             if child not in visited:
                 visited.add(child)
                 yield parent, child
                 if depth_limit is None or depth < depth_limit:
-                    queue.append((child, depth + 1, iter(G[child])))
-        except StopIteration:
-            queue.pop(0)
+                    # Store neighbor list directly
+                    queue.append((child, depth + 1, list(G[child])))
+        idx += 1  # Move to next in queue

@@ -1,24 +1,16 @@
-"""MWSPO.py - Optimized Multiscale Wasserstein Shortest Path Graph Kernel
+"""MWSPO.py - Memory-Optimized Multiscale Wasserstein Shortest Path Graph Kernel
 
-This module implements a GPU-accelerated graph kernel for graph classification tasks.
-It combines multiscale structural features with optimal transport distances to compute
-similarities between graphs, enabling high-accuracy classification with SVM.
+Key Memory Optimizations:
+1. Hash-based Path Representation: Replaces string paths with fixed-size hashes
+2. Sparse Feature Matrices: Uses scipy.sparse instead of dense matrices
+3. Fixed Feature Dimension: Prevents vocabulary explosion with hashing trick
+4. Incremental Processing: Handles graphs sequentially to avoid full-dataset storage
+5. Explicit Memory Management: Aggressive garbage collection and del statements
 
-Key components:
-1. Multiscale BFS-based feature extraction
-2. Shortest path representation
-3. Wasserstein distance computation
-4. Heat kernel transformation
-5. SVM classification
-
-Designed for:
-- Large-scale graph datasets (1000+ graphs)
-- GPU cluster environments (Tesla V100, EPYC CPUs)
-- Memory-constrained execution
-
-Author: Celestine
-Contact: https://t.me/celestine_1729
-Date: July 2025
+Designed for cluster execution with:
+- 256GB RAM
+- 2× Tesla V100 GPUs
+- Large datasets (1000+ graphs)
 """
 
 import os
@@ -31,8 +23,7 @@ import torch
 import cugraph
 import cudf
 import networkx as nx
-from gensim import corpora
-import gensim
+from scipy.sparse import lil_matrix, csr_matrix
 from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score
@@ -40,13 +31,14 @@ from joblib import Parallel, delayed
 import multiprocessing
 import psutil
 from geomloss import SamplesLoss
+import hashlib
 
-# Global configuration (tuned for 1000-1200 graph datasets)
+# ======================== GLOBAL CONFIGURATION ========================
 USE_GPU = torch.cuda.is_available()
-"""bool: Automatically detect GPU availability"""
+"""bool: Automatically detect GPU availability for acceleration"""
 
 GPU_DEVICES = list(range(torch.cuda.device_count())) if USE_GPU else []
-"""list: Available GPU device IDs"""
+"""list: Available GPU device IDs for parallel processing"""
 
 MAX_NODES = 180
 """int: Maximum nodes per graph for subsampling (memory control)"""
@@ -63,29 +55,28 @@ MAXH_LIMIT = 3
 DEPTH_LIMIT = 2
 """int: Maximum shortest path depth"""
 
+FEATURE_DIM = 2**20  # 1,048,576 features
+"""int: Fixed feature dimension for hashing trick (prevents memory explosion)"""
+
+# ========================== RESOURCE MONITOR ==========================
 class ResourceMonitor:
-    """Context manager for precise resource tracking
+    """Tracks execution resources within context block
     
-    Tracks execution time, RAM usage, and peak GPU memory consumption
-    within its context block.
+    Usage:
+        with ResourceMonitor("Process Name"):
+            # Your code here
+        # Automatically prints resource report
     
-    Attributes:
-        name (str): Identifier for the monitored block
-        start_time (float): Timestamp when monitoring began
-        start_mem (int): Initial RAM usage in bytes
-        duration (float): Total execution time in seconds
-        ram_used (float): RAM consumption in GB
+    Measures:
+    - Execution time
+    - RAM consumption (GB)
+    - Peak GPU memory (GB)
     """
     
     def __init__(self, name):
-        """
-        Args:
-            name: Descriptive name for the monitored code block
-        """
         self.name = name
         
     def __enter__(self):
-        """Start resource monitoring"""
         self.start_time = time.time()
         self.start_mem = psutil.virtual_memory().used
         if USE_GPU:
@@ -93,7 +84,6 @@ class ResourceMonitor:
         return self
         
     def __exit__(self, *args):
-        """Finalize measurements and print report"""
         self.duration = time.time() - self.start_time
         self.ram_used = (psutil.virtual_memory().used - self.start_mem) / (1024**3)
         
@@ -102,51 +92,48 @@ class ResourceMonitor:
             for device in GPU_DEVICES:
                 mem = torch.cuda.max_memory_allocated(device) / (1024**3)
                 gpu_mem = max(gpu_mem, mem)
-                torch.cuda.reset_peak_memory_stats(device)
+        
+        # New: Monitor current process memory
+        proc = psutil.Process()
+        current_ram = proc.memory_info().rss / (1024**3)
         
         print(f"[RESOURCE] {self.name:<22} | {self.duration:7.1f}s | "
-              f"RAM: {self.ram_used:5.1f}GB | GPU: {gpu_mem:5.1f}GB")
+              f"RAM: +{self.ram_used:5.1f}GB (Total: {current_ram:5.1f}GB) | "
+              f"GPU: {gpu_mem:5.1f}GB")
 
+# ========================== GRAPH CONTAINER ==========================
 class GraphContainer:
-    """Memory-efficient graph representation
-    
-    Optimized for large-scale processing with minimal overhead.
+    """Efficient graph representation with minimal overhead
     
     Attributes:
         label (int): Graph class label
         g (nx.Graph): NetworkX graph object
-        node_tags (list): Node labels or attributes
+        node_tags (list): Node labels/attributes
         node_features (np.ndarray): Feature matrix (nodes x features)
     """
     __slots__ = ['label', 'g', 'node_tags', 'node_features']
     
     def __init__(self, g, label, node_tags=None):
-        """
-        Args:
-            g: NetworkX graph object
-            label: Graph class label
-            node_tags: List of node labels/tags
-        """
         self.label = label
         self.g = g
         self.node_tags = node_tags
         self.node_features = None
 
+# ========================== DATA LOADING ==========================
 def load_data(dataset, degree_as_tag=False):
     """Load and preprocess graph dataset
     
-    Parses dataset from text format, builds feature matrices, and handles
-    memory-efficient graph representations.
+    Memory Optimizations:
+    - Slots-based GraphContainer
+    - Efficient one-hot encoding
+    - Degree-based tags for specific datasets
     
     Args:
-        dataset: Name of dataset directory (must exist in datasets/)
-        degree_as_tag: Whether to use node degree as tags
+        dataset: Name of dataset directory
+        degree_as_tag: Use node degree as tags (for REDDIT/IMDB)
         
     Returns:
-        tuple: (list of GraphContainer objects, number of classes)
-        
-    Raises:
-        SystemExit: If dataset file not found
+        tuple: (graphs, n_classes)
     """
     graphs = []
     label_dict = {}
@@ -183,7 +170,6 @@ def load_data(dataset, degree_as_tag=False):
         if degree_as_tag:
             graph.node_tags = [d for _, d in graph.g.degree()]
         
-        # Build efficient one-hot encoded features
         n_nodes = len(graph.node_tags)
         n_features = len(all_tags)
         graph.node_features = np.zeros((n_nodes, n_features))
@@ -194,15 +180,15 @@ def load_data(dataset, degree_as_tag=False):
           f"Node features: {len(all_tags)}")
     return graphs, len(label_dict)
 
+# ====================== WASSERSTEIN COMPUTATION ======================
 def sliced_wasserstein(X, Y, projections=100):
-    """Compute sliced Wasserstein distance approximation
+    """GPU-accelerated sliced Wasserstein distance
     
-    GPU-accelerated linear-time approximation of Wasserstein distance
-    using random projections.
+    Approximates Wasserstein distance in O(d(n+m)) time using random projections
     
     Args:
-        X: Tensor of shape (n, d)
-        Y: Tensor of shape (m, d)
+        X: (n, d) tensor
+        Y: (m, d) tensor
         projections: Number of random projections
         
     Returns:
@@ -217,69 +203,59 @@ def sliced_wasserstein(X, Y, projections=100):
     return torch.mean(torch.abs(X_proj - Y_proj))
 
 def compute_wasserstein(embeddings):
-    """Compute pairwise Wasserstein distances between graph embeddings
+    """Compute pairwise Wasserstein distances
     
-    Hybrid computation strategy:
-    - Uses exact Sinkhorn for small graph pairs
-    - Uses sliced Wasserstein approximation for large graph pairs
-    - Automatic subsampling for graphs exceeding MAX_NODES
-    - Parallelized across multiple GPUs
+    Hybrid strategy:
+    - Small graphs: Exact Sinkhorn
+    - Large graphs: Sliced approximation
+    - Automatic subsampling for large graphs
     
     Args:
-        embeddings: List of embedding matrices per graph
+        embeddings: List of sparse embedding matrices
         
     Returns:
-        np.ndarray: Symmetric distance matrix (n_graphs x n_graphs)
+        np.ndarray: Distance matrix (n_graphs x n_graphs)
     """
     n = len(embeddings)
     M = np.zeros((n, n))
     
-    # Node subsampling - critical for memory management
+    # Node subsampling - critical for memory
     emb_subsampled = []
     for emb in embeddings:
-        if len(emb) > MAX_NODES:
-            idx = np.random.choice(len(emb), MAX_NODES, replace=False)
-            emb_subsampled.append(emb[idx])
+        if emb.shape[0] > MAX_NODES:
+            idx = np.random.choice(emb.shape[0], MAX_NODES, replace=False)
+            emb_subsampled.append(emb[idx].toarray())
         else:
-            emb_subsampled.append(emb)
+            emb_subsampled.append(emb.toarray())
     
     # Create comparison pairs (upper triangle)
     pairs = [(i, j) for i in range(n) for j in range(i+1, n)]
     
     def process_batch(batch, device_id):
-        """Process batch of distance computations on specified GPU
-        
-        Args:
-            batch: List of (i,j) index pairs
-            device_id: GPU device ID
-            
-        Returns:
-            list: (i, j, distance) tuples
-        """
+        """Process batch on specified GPU"""
         device = torch.device(f'cuda:{device_id}')
         results = []
         for i, j in batch:
             X = torch.tensor(emb_subsampled[i], dtype=torch.float32, device=device)
             Y = torch.tensor(emb_subsampled[j], dtype=torch.float32, device=device)
             
-            # Algorithm selection heuristic
-            if X.shape[0] * Y.shape[0] > 1e6:  # Large matrix
+            # Heuristic: Sliced for large, Sinkhorn for small
+            if X.shape[0] * Y.shape[0] > 1e6:
                 dist = sliced_wasserstein(X, Y, SLICED_PROJECTIONS).item()
             else:
                 dist = SamplesLoss("sinkhorn", p=2, blur=0.01)(X, Y).item()
             results.append((i, j, dist))
         return results
     
-    # GPU batch processing configuration
+    # GPU batch processing
     batch_size = min(GPU_BATCH_SIZE, len(pairs) // max(1, len(GPU_DEVICES)))
     batches = [pairs[i:i+batch_size] for i in range(0, len(pairs), batch_size)]
     
-    print(f"Computing {len(pairs)} distances on {len(GPU_DEVICES)} GPUs "
-          f"(batch_size={batch_size})")
+    print(f"Computing {len(pairs)} distances on {len(GPU_DEVICES)} GPUs")
     
     all_results = []
     if USE_GPU and GPU_DEVICES:
-        # Distribute batches across available GPUs
+        # Distribute batches across GPUs
         batches_per_gpu = (len(batches) + len(GPU_DEVICES) - 1) // len(GPU_DEVICES)
         with Parallel(n_jobs=len(GPU_DEVICES), backend="threading") as parallel:
             results = parallel(
@@ -289,7 +265,7 @@ def compute_wasserstein(embeddings):
                 ) for idx, i in enumerate(range(0, len(batches), batches_per_gpu))
             all_results = [res for batch in results for res in batch]
     else:
-        # CPU fallback mode
+        # CPU fallback
         device = torch.device('cpu')
         for i, j in pairs:
             X = torch.tensor(emb_subsampled[i], dtype=torch.float32, device=device)
@@ -302,24 +278,12 @@ def compute_wasserstein(embeddings):
         M[i, j] = dist
         M[j, i] = dist
     
-    # Ensure numerical stability
     np.fill_diagonal(M, 0)
-    M = (M + M.T) / 2  # Force symmetry
-    return M
+    return (M + M.T) / 2  # Ensure symmetry
 
+# ====================== GRAPH PROCESSING UTILS ======================
 def gpu_bfs(G, source, depth):
-    """GPU-accelerated BFS tree extraction
-    
-    Uses cuGraph for parallel breadth-first search on GPU.
-    
-    Args:
-        G: NetworkX graph
-        source: Starting node
-        depth: Maximum BFS depth
-        
-    Returns:
-        list: Edge list of BFS tree
-    """
+    """GPU-accelerated BFS tree extraction using cuGraph"""
     edges = list(G.edges())
     df = cudf.DataFrame({
         'src': [e[0] for e in edges],
@@ -334,158 +298,173 @@ def gpu_bfs(G, source, depth):
     except:
         return []  # Fallback for isolated nodes
 
-def build_embeddings(graphs, maxh, depth):
-    """Construct multiscale graph embeddings
+def path_to_feature_index(path, labels):
+    """Convert path to fixed feature index using hashing
     
-    Pipeline:
-    1. Hierarchical feature extraction via BFS
-    2. Shortest path enumeration
-    3. Bag-of-Words embedding generation
-    4. Multiscale feature concatenation
+    Memory Optimization:
+    - Uses SHA256 hash truncated to 64-bit integer
+    - Modulo FEATURE_DIM ensures fixed-size feature space
+    
+    Args:
+        path: String path (comma-separated node IDs)
+        labels: Current node labels
+        
+    Returns:
+        int: Feature index in [0, FEATURE_DIM-1]
+    """
+    # Convert node IDs to label sequence
+    nodes = path.split(',')
+    label_seq = tuple(labels[int(n)] for n in nodes)
+    
+    # Generate stable hash
+    hash_str = hashlib.sha256(str(label_seq).encode()).hexdigest()
+    hash_int = int(hash_str[:16], 16)  # 64-bit integer
+    return hash_int % FEATURE_DIM
+
+# ====================== EMBEDDING GENERATION ======================
+def build_embeddings(graphs, maxh, depth):
+    """Memory-optimized embedding construction
+    
+    Critical Optimizations:
+    1. Hash-based feature indexing (fixed-size output)
+    2. Sparse matrix storage (lil_matrix)
+    3. Per-graph processing (no global storage)
+    4. Hierarchical feature compression
     
     Args:
         graphs: List of GraphContainer objects
-        maxh: Maximum BFS depth
-        depth: Maximum path depth
+        maxh: Max BFS depth
+        depth: Max path depth
         
     Returns:
-        list: Embedding matrices per graph
+        list: Sparse embedding matrices (csr_format)
     """
     n_graphs = len(graphs)
-    all_labels = [g.node_tags for g in graphs]
+    all_labels = [g.node_tags for g in graphs]  # Initial labels
     
-    # Hierarchical feature extraction
+    # ========== Hierarchical Feature Extraction ==========
     for level in range(1, maxh):
         new_labels = []
-        all_trees = []
         tree_dict = {}
+        global_hashes = []
         
         with ResourceMonitor(f"BFS Level {level}"):
             for gidx, graph in enumerate(graphs):
                 G = graph.g
-                labels = all_labels[gidx]
-                trees = []
+                labels = all_labels[gidx]  # Current labels
+                tree_hashes = []  # New labels for this graph
                 
-                # GPU acceleration for large graphs
-                if USE_GPU and len(G) > 100:
-                    for node in range(len(G)):
+                for node in range(len(G)):
+                    # Get BFS tree
+                    if USE_GPU and len(G) > 100:
                         edges = gpu_bfs(G, node, level)
-                        tree_str = ",".join(f"{labels[u]},{labels[v]}" for u,v in edges)
-                        trees.append(tree_str)
-                else:
-                    for node in range(len(G)):
-                        edges = list(bfs.bfs_edges(G, labels, source=node, depth_limit=level))
-                        tree_str = ",".join(f"{labels[u]},{labels[v]}" for u,v in edges)
-                        trees.append(tree_str)
-                
-                all_trees.extend(trees)
-                tree_dict.update({t: i for i, t in enumerate(set(trees))})
-        
-        # Update labels
-        with ResourceMonitor(f"Label Mapping {level}"):
-            for gidx in range(n_graphs):
-                start = sum(len(graphs[i].g) for i in range(gidx))
-                end = start + len(graphs[gidx].g)
-                new_labels.append([tree_dict[t] for t in all_trees[start:end]])
-        
-        all_labels = new_labels
-        gc.collect()
-    
-    # Path extraction
-    all_paths = []
-    with ResourceMonitor("Path Extraction"):
-        for graph, labels in zip(graphs, all_labels):
-            G = graph.g
-            paths = []
-            
-            if USE_GPU and len(G) > 50:
-                try:
-                    edges = list(G.edges())
-                    df = cudf.DataFrame({
-                        'src': [e[0] for e in edges],
-                        'dst': [e[1] for e in edges]
-                    })
-                    cug = cugraph.Graph()
-                    cug.from_cudf_edgelist(df, 'src', 'dst')
+                    else:
+                        edges = list(bfs_edges(G, labels, source=node, depth_limit=level))
                     
-                    for node in range(len(G)):
+                    # Create tree signature
+                    if edges:
+                        # Signature: sorted edge label pairs
+                        signature = tuple(sorted(
+                            (labels[u], labels[v]) for u, v in edges
+                        ))
+                    else:
+                        # Single-node tree
+                        signature = (labels[node],)
+                    
+                    tree_hash = hash(signature)
+                    tree_hashes.append(tree_hash)
+                    global_hashes.append(tree_hash)
+                
+                new_labels.append(tree_hashes)
+                del tree_hashes
+                gc.collect()
+            
+            # Create global label mapping
+            unique_hashes = set(global_hashes)
+            tree_dict = {h: idx for idx, h in enumerate(unique_hashes)}
+            
+            # Update labels for next level
+            all_labels = [
+                [tree_dict[h] for h in graph_hashes] 
+                for graph_hashes in new_labels
+            ]
+            del global_hashes, unique_hashes, new_labels
+            gc.collect()
+    
+    # ========== Path-Based Embedding Generation ==========
+    graph_embs = []
+    
+    with ResourceMonitor("Path Extraction"):
+        for gidx, graph in enumerate(graphs):
+            G = graph.g
+            labels = all_labels[gidx]  # Final labels
+            emb = lil_matrix((len(G), FEATURE_DIM), dtype=np.float32)
+            
+            for node in range(len(G)):
+                # Node as single-node path
+                h = hash((labels[node],)) % FEATURE_DIM
+                emb[node, h] += 1
+                
+                # Get all paths from this node
+                try:
+                    if USE_GPU and len(G) > 50:
+                        # GPU-accelerated SSSP
+                        edges = list(G.edges())
+                        df = cudf.DataFrame({
+                            'src': [e[0] for e in edges],
+                            'dst': [e[1] for e in edges]
+                        })
+                        cug = cugraph.Graph()
+                        cug.from_cudf_edgelist(df, 'src', 'dst')
                         sssp = cugraph.sssp(cug, node, depth)
-                        node_paths = [str(node)]
+                        
                         for target in sssp['vertex'].to_array():
-                            if target == node: continue
+                            if target == node: 
+                                continue
                             path = cugraph.utils.get_traversed_path_list(sssp, target)
                             if path:
-                                path_str = ",".join(map(str, path))
-                                node_paths.append(path_str)
-                        paths.append(node_paths)
-                except:
-                    USE_GPU = False  # Fallback to CPU
-            else:
-                for node in range(len(G)):
-                    node_paths = [str(node)]
-                    try:
+                                path_str = ','.join(map(str, path))
+                                h = path_to_feature_index(path_str, labels)
+                                emb[node, h] += 1
+                    else:
+                        # CPU fallback
                         for target in nx.single_source_shortest_path_length(G, node, depth):
-                            if target == node: continue
+                            if target == node: 
+                                continue
                             path = nx.shortest_path(G, node, target)
-                            path_str = ",".join(map(str, path))
-                            node_paths.append(path_str)
-                    except:
-                        pass
-                    paths.append(node_paths)
+                            path_str = ','.join(map(str, path))
+                            h = path_to_feature_index(path_str, labels)
+                            emb[node, h] += 1
+                except Exception as e:
+                    # Skip problematic nodes
+                    continue
             
-            all_paths.append(paths)
+            # Convert to compressed format and store
+            graph_embs.append(csr_matrix(emb))
+            del emb
+            gc.collect()
     
-    # Embedding generation
-    embeddings = []
-    with ResourceMonitor("Embedding Generation"):
-        for level in range(maxh):
-            path_reprs = []
-            for gidx in range(n_graphs):
-                labels = all_labels[gidx]
-                for i, paths in enumerate(all_paths[gidx]):
-                    reprs = []
-                    for path in paths:
-                        nodes = path.split(",")
-                        reprs.append(",".join(str(labels[int(n)]) for n in nodes))
-                    path_reprs.append(reprs)
-            
-            # Build Bag-of-Words embeddings
-            dictionary = corpora.Dictionary(path_reprs)
-            corpus = [dictionary.doc2bow(paths) for paths in path_reprs]
-            bow = gensim.matutils.corpus2dense(corpus, len(dictionary)).T
-            embeddings.append(bow)
-        
-        # Concatenate multiscale features
-        full_emb = np.hstack(embeddings)
-        
-        # Split by graph
-        graph_embs = []
-        idx = 0
-        for graph in graphs:
-            n = len(graph.g)
-            graph_embs.append(full_emb[idx:idx+n])
-            idx += n
-        
-        print(f"Embedding dimension: {full_emb.shape[1]}")
-        return graph_embs
+    print(f"Generated embeddings: {len(graph_embs)} graphs")
+    print(f"Feature dimension: {FEATURE_DIM} (fixed)")
+    return graph_embs
 
+# ====================== EXPERIMENT PIPELINE ======================
 def run_experiment(dataset, maxh, depth):
-    """End-to-end experiment pipeline
+    """End-to-end experiment workflow
     
-    Workflow:
-    1. Load and preprocess data
-    2. Generate multiscale embeddings
-    3. Compute Wasserstein distance matrix
-    4. Build kernel matrix
-    5. Train and evaluate SVM classifier
+    1. Load data
+    2. Generate embeddings
+    3. Compute distance matrix
+    4. Train SVM classifier
+    5. Evaluate accuracy
     
     Args:
         dataset: Dataset name
-        maxh: Maximum BFS depth
-        depth: Maximum path depth
+        maxh: Max BFS depth
+        depth: Max path depth
         
     Returns:
-        tuple: (mean accuracy, standard deviation)
+        tuple: (mean accuracy, std)
     """
     # Load and preprocess data
     with ResourceMonitor("Data Loading"):
@@ -503,7 +482,7 @@ def run_experiment(dataset, maxh, depth):
     
     # Kernel matrix construction
     with ResourceMonitor("Kernel Construction"):
-        gamma = 0.1 / np.median(D[D > 0])  # Adaptive kernel scaling
+        gamma = 0.1 / np.median(D[D > 0])  # Adaptive scaling
         K = np.exp(-gamma * D)
     
     # Classification and evaluation
@@ -525,10 +504,10 @@ def run_experiment(dataset, maxh, depth):
     
     return mean_acc, std_acc
 
+# ====================== MAIN EXECUTION ======================
 if __name__ == "__main__":
-    # Command-line interface
     parser = argparse.ArgumentParser(
-        description="Multiscale Wasserstein Shortest Path Graph Kernel",
+        description="Memory-Optimized MWSPO Graph Kernel",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("dataset", help="Dataset name")
@@ -542,12 +521,12 @@ if __name__ == "__main__":
     print("\n" + "="*70)
     print(f"MWSPO Graph Kernel Experiment: {args.dataset}")
     print(f"Configuration: maxh={args.maxh}, depth={args.depth}")
+    print(f"Feature Dimension: {FEATURE_DIM} (fixed)")
     print(f"Hardware: {len(GPU_DEVICES)} GPUs, {multiprocessing.cpu_count()} CPUs")
     print(f"Memory: {psutil.virtual_memory().total/(1024**3):.1f}GB RAM")
     print("="*70)
     
-    # Safety checks
-    if len(GPU_DEVICES) == 0:
+    if not GPU_DEVICES:
         print("WARNING: No GPUs detected - falling back to CPU mode")
     
     # Enforce safety limits
