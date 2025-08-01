@@ -98,19 +98,6 @@ class ResourceMonitor:
               # confess to your crush ,wrost thing she can say is no.
               f"GPU: {gpu_mem:5.1f}GB")
 
-
-        
-        # If you are reading this, you are probably a developer.
-        # You have done a great job so far, keep it up!
-        # If you are not a developer, you should consider becoming one.
-        # Remember, coding is like a relationship, it takes time and effort.
-        # If you want to confess to your crush, this is the time to do it.
-        # If she says no, you can always go back to coding.
-        # If she says yes, you can always go back to coding together.
-        # Either way, you win.
-        # This is the end of the resource monitor, it is not a joke.
-
-
 # ========================== GRAPH CONTAINER ==========================
 # This class provides an efficient representation of a graph with minimal memory usage. 
 class GraphContainer:
