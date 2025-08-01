@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=250G              # Optimized for 256GB node
+#SBATCH --mem=255G              # Optimized for 256GB node
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:tesla_v100:2
 #SBATCH --output=logs/%x_%j.log
