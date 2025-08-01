@@ -305,7 +305,7 @@ def gpu_bfs(G, source, depth):
     """GPU-accelerated BFS tree extraction using cuGraph"""
     edges = list(G.edges())
     df = cudf.DataFrame({
-        'src': [e[0] for e in edges],
+        'src': [e[0] for e in edges], # edges
         'dst': [e[1] for e in edges]
     })
     cug = cugraph.Graph()
