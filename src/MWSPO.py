@@ -1,5 +1,6 @@
 """MWSPO.py - Memory-Optimized Multiscale Wasserstein Shortest Path Graph Kernel
-    July 2025 , by Celestine
+    July 2025 , by Celestine 
+    contact : Celestine1729@proton.me
 
 Designed for cluster execution with:
 - 256GB RAM
