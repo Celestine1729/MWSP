@@ -274,7 +274,9 @@ def compute_wasserstein(embeddings):
         # Each assignment is a tuple (gpu_id, list_of_batches)
         
         # Process in parallel , this is the main computation of the MWSPO kernel.
-        with Parallel(n_jobs=len(gpu_assignments), backend="threading") as parallel:
+        with Parallel(n_jobs=len(gpu_assignments), backend="threading") as parallel:# if you see dead locks, try changing to multiprocessing
+            # Each GPU processes its assigned batches
+            # This is the main computation of the MWSPO kernel.
             results = parallel(
                 delayed(lambda args: [process_batch(batch, args[0]) for batch in args[1]])(assignment)
                 for assignment in gpu_assignments
