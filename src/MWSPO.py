@@ -278,7 +278,7 @@ def compute_wasserstein(embeddings):
             )
             all_results = [res for gpu_results in results for batch_results in gpu_results for res in batch_results]
     else:
-        
+
         # CPU fallback , "CAPITAN! , WE ARE OUT OF AMMO SIR!" , "NO! NO STEP BACK!, THROW YOUR CPU'S ON THEM!""
         device = torch.device('cpu')
         for i, j in pairs:
@@ -465,6 +465,7 @@ def build_embeddings(graphs, maxh, depth):
     return graph_embs
 
 # ====================== EXPERIMENT PIPELINE ======================
+# MAN THE CANONS , WE ARE GOING TO TAKE DOWN THAT DATASET!
 def run_experiment(dataset, maxh, depth):
     """End-to-end experiment workflow
     
