@@ -5,9 +5,8 @@
 Designed for cluster execution with:
 - 256GB RAM
 - 2x Tesla V100 GPUs
-- Large datasets (1000+ graphs)
+- Large datasets (1000+ graphs) both for labelled and unlabeled graphs
 """
-
 import os
 import sys
 import time
@@ -30,6 +29,7 @@ from geomloss import SamplesLoss
 import hashlib
 
 # ======================== GLOBAL CONFIGURATION ========================
+# This section defines global constants and configurations for the MWSPO kernel , something like defines in C.
 USE_GPU = torch.cuda.is_available()
 """bool: Automatically detect GPU availability for acceleration"""
 
@@ -98,6 +98,7 @@ class ResourceMonitor:
               f"GPU: {gpu_mem:5.1f}GB")
 
 # ========================== GRAPH CONTAINER ==========================
+# This class provides an efficient representation of a graph with minimal memory usage. 
 class GraphContainer:
     """Efficient graph representation with minimal overhead
     
@@ -133,7 +134,7 @@ def load_data(dataset, degree_as_tag=False):
     """
     graphs = []
     label_dict = {}
-    path = f'datasets/{dataset}/{dataset}.txt' # Adjust path as needed
+    path = f'datasets/{dataset}/{dataset}.txt' # Adjust path as needed here , we work with .txt files. 
     
     if not os.path.exists(path):
         sys.exit(f"Error: Missing dataset at {path}") # Ensure path is correct
@@ -176,6 +177,8 @@ def load_data(dataset, degree_as_tag=False):
     return graphs, len(label_dict)
 
 # ====================== WASSERSTEIN COMPUTATION ======================
+# for tough graphs, we use the sliced Wasserstein distance, and for small graphs, we use the Sinkhorn distance.
+# This is a heuristic to balance speed and accuracy.
 def sliced_wasserstein(X, Y, projections=100): 
     """GPU-accelerated sliced Wasserstein distance
     
@@ -198,6 +201,8 @@ def sliced_wasserstein(X, Y, projections=100):
     return torch.mean(torch.abs(X_proj - Y_proj))
 
 def compute_wasserstein(embeddings):
+    # """Compute pairwise Wasserstein distances between graph embeddings of the graph of various sizes
+    # either using the sliced Wasserstein distance for large graphs or the Sinkhorn distance for small graphs.
     """
     
     Computes the pairwise Wasserstein distances between graph embeddings.
@@ -212,7 +217,8 @@ def compute_wasserstein(embeddings):
     n = len(embeddings)
     M = np.zeros((n, n))
     
-    # Node subsampling - critical for memory
+    # Node subsampling - critical for memory if the graph has more than MAX_NODES,
+    #  unless you want fried memory for lunchtime.
     emb_subsampled = []
     for emb in embeddings:
         if emb.shape[0] > MAX_NODES:
@@ -232,7 +238,7 @@ def compute_wasserstein(embeddings):
             X = torch.tensor(emb_subsampled[i], dtype=torch.float32, device=device)
             Y = torch.tensor(emb_subsampled[j], dtype=torch.float32, device=device)
             
-            # Heuristic: Sliced for large, Sinkhorn for small
+            # Heuristic: Sliced for large, Sinkhorn for small.
             if X.shape[0] * Y.shape[0] > 1e6:
                 dist = sliced_wasserstein(X, Y, SLICED_PROJECTIONS).item()
             else:
@@ -248,18 +254,23 @@ def compute_wasserstein(embeddings):
     
     all_results = []
     if USE_GPU and GPU_DEVICES:
-        # Corrected GPU distribution logic
+        # Corrected GPU distribution logic I should write a test for this.
+        # Distribute batches evenly across available GPUs
         batches_per_gpu = (len(batches) + len(GPU_DEVICES) - 1) // len(GPU_DEVICES)
+
         
-        # Create GPU assignment plan
+        # Create GPU assignment plan , the batches are distributed evenly across the GPUs.
+        # like a drill sargeant.
+        # Each GPU gets a slice of the batches to process.
         gpu_assignments = []
         for gpu_idx in range(len(GPU_DEVICES)):
             start_idx = gpu_idx * batches_per_gpu
             end_idx = min((gpu_idx + 1) * batches_per_gpu, len(batches))
             if start_idx < len(batches):
                 gpu_assignments.append((GPU_DEVICES[gpu_idx], batches[start_idx:end_idx]))
+        # Each assignment is a tuple (gpu_id, list_of_batches)
         
-        # Process in parallel
+        # Process in parallel , this is the main computation of the MWSPO kernel.
         with Parallel(n_jobs=len(gpu_assignments), backend="threading") as parallel:
             results = parallel(
                 delayed(lambda args: [process_batch(batch, args[0]) for batch in args[1]])(assignment)
@@ -267,7 +278,8 @@ def compute_wasserstein(embeddings):
             )
             all_results = [res for gpu_results in results for batch_results in gpu_results for res in batch_results]
     else:
-        # CPU fallback
+        
+        # CPU fallback , "CAPITAN! , WE ARE OUT OF AMMO SIR!" , "NO! NO STEP BACK!, THROW YOUR CPU'S ON THEM!""
         device = torch.device('cpu')
         for i, j in pairs:
             X = torch.tensor(emb_subsampled[i], dtype=torch.float32, device=device)
@@ -475,7 +487,7 @@ def run_experiment(dataset, maxh, depth):
 
         degree_tag = dataset in ['IMDB-BINARY', 'REDDIT-BINARY']# Use degree as node tags for specific datasets, not all datasets
         # for example for the fraking MUTAG dataset, the degree is not used as a tag, and uses the dataset information as tags.
-        
+
         graphs, n_classes = load_data(dataset, degree_tag)# see the n_classes? the code does not use it, but it is useful for the future.
         labels = np.array([g.label for g in graphs])
     
