@@ -284,7 +284,7 @@ def compute_wasserstein(embeddings):
     return (M + M.T) / 2  # Ensure symmetry
 
 # ====================== GRAPH PROCESSING UTILS ======================
-def gpu_bfs(G, source, depth):
+def gpu_bfs(G, source, depth): 
     """GPU-accelerated BFS tree extraction using cuGraph"""
     edges = list(G.edges())
     df = cudf.DataFrame({
@@ -298,7 +298,7 @@ def gpu_bfs(G, source, depth):
         return [(int(row['predecessor']), int(row['vertex'])) 
                 for _, row in tree.iterrows() if row['predecessor'] >= 0]
     except:
-        return []  # Fallback for isolated nodes
+        return []  # Fallback for isolated nodes , or potentially problematic graphs (rare case)
 
 def path_to_feature_index(path, labels):
     """Convert path to fixed feature index using hashing
@@ -359,7 +359,7 @@ def build_embeddings(graphs, maxh, depth):
                 for node in range(len(G)):
                     # Get BFS tree
                     if USE_GPU and len(G) > 100:
-                        edges = gpu_bfs(G, node, level)
+                        edges = gpu_bfs(G, node, level) # searching for the BFS tree using GPU
                     else:
                         edges = list(bfs_edges(G, labels, source=node, depth_limit=level))
                     
@@ -439,6 +439,7 @@ def build_embeddings(graphs, maxh, depth):
                             emb[node, h] += 1
                 except Exception as e:
                     print(f"The shortest path computation failed for node {node}: {str(e)}")
+                    # this is a flag for bad graphs, or isolated nodes
                     # Skip problematic nodes
                     continue
             
@@ -447,7 +448,7 @@ def build_embeddings(graphs, maxh, depth):
             del emb
             gc.collect()
     
-    print(f"Generated embeddings: {len(graph_embs)} graphs")
+    print(f"Generated embeddings: {len(graph_embs)} graphs")# this is the number of graphs in the dataset, or the number of ID cards we have created.
     print(f"Feature dimension: {FEATURE_DIM} (fixed)")
     return graph_embs
 
@@ -471,25 +472,28 @@ def run_experiment(dataset, maxh, depth):
     """
     # Load and preprocess data
     with ResourceMonitor("Data Loading"):
-        degree_tag = dataset in ['IMDB-BINARY', 'REDDIT-BINARY']
-        graphs, n_classes = load_data(dataset, degree_tag)
+
+        degree_tag = dataset in ['IMDB-BINARY', 'REDDIT-BINARY']# Use degree as node tags for specific datasets, not all datasets
+        # for example for the fraking MUTAG dataset, the degree is not used as a tag, and uses the dataset information as tags.
+        
+        graphs, n_classes = load_data(dataset, degree_tag)# see the n_classes? the code does not use it, but it is useful for the future.
         labels = np.array([g.label for g in graphs])
     
     # Feature extraction pipeline
     with ResourceMonitor("Feature Extraction"):
-        embeddings = build_embeddings(graphs, maxh, depth)
+        embeddings = build_embeddings(graphs, maxh, depth)# build ID cards for the graphs , very memory efficient, but still powerful.
     
     # Distance computation
-    with ResourceMonitor("Wasserstein Distance"):
+    with ResourceMonitor("Wasserstein Distance"):# the main computation for the MWSPO kernel
         D = compute_wasserstein(embeddings)
     
     # Kernel matrix construction
-    with ResourceMonitor("Kernel Construction"):
+    with ResourceMonitor("Kernel Construction"): # the kernel matrix is the main output of the MWSPO kernel
         gamma = 0.1 / np.median(D[D > 0])  # Adaptive scaling
         K = np.exp(-gamma * D)
     
     # Classification and evaluation
-    with ResourceMonitor("SVM Training"):
+    with ResourceMonitor("SVM Training"):# the SVM is used to classify the graphs based on the kernel matrix
         cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
         accs = []
         
@@ -529,7 +533,7 @@ if __name__ == "__main__":
     print(f"Memory: {psutil.virtual_memory().total/(1024**3):.1f}GB RAM")
     print("="*70)
     
-    if not GPU_DEVICES:
+    if not GPU_DEVICES:# this is a fallback for CPU execution , but our clsuter will have GPUs , and this is just a safety check
         print("INFO: Running in CPU mode (no GPUs detected)")
     
     # Enforce safety limits
