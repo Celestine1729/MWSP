@@ -296,6 +296,8 @@ def compute_wasserstein(embeddings):
     return (M + M.T) / 2  # Ensure symmetry
 
 # ====================== GRAPH PROCESSING UTILS ======================
+# ALL UNITS BE ADVISED! , SUSPECT IS A GRAPH, WE ARE GOING TO EXTRACT THE BFS TREE! 
+# USE OF VIOLENCE IS AUTHORIZED! ARREST AT ALL COSTS! WANTED, DEAD OR ALIVE!
 def gpu_bfs(G, source, depth): 
     """GPU-accelerated BFS tree extraction using cuGraph"""
     edges = list(G.edges())
