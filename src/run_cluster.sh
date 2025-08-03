@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=MWSPO
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=255G              # Optimized for 256GB node
-#SBATCH --time=24:00:00
-#SBATCH --gres=gpu:tesla_v100:2
+#SBATCH --nodes=4                  # Use 4 physical nodes
+#SBATCH --ntasks-per-node=4        # 4 tasks per node = 1 per GPU
+#SBATCH --cpus-per-task=5          # 5 cores per dataset
+#SBATCH --mem=200G                 # 200GB ram per dataset
+#SBATCH --gres=gpu:tesla_v100:1    # 1 GPU per dataset
+#SBATCH --array=1-24%16            # 24 datasets, max 16 concurrent (4 nodes × 4 GPUs)
+#SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.log
 
 echo "========== ENVIRONMENT SETUP =========="
@@ -32,9 +32,17 @@ fi
 
 echo "========== EXECUTION =========="
 echo "Starting MWSPO graph kernel experiment..."
-python MWSPO.py YOUR_DATASET_NAME_HERE \
-  --maxh 3 \
-  --depth 2
+
+mapfile -t DS_LIST < datasets.txt
+CURRENT_DS=${DS_LIST[$SLURM_ARRAY_TASK_ID - 1]}
+
+# Critical: Limit CPU threads
+export OMP_NUM_THREADS=5
+export OPENBLAS_NUM_THREADS=5
+
+# Single dataset per task
+srun --ntasks=1 --exclusive \
+  python MWSPO.py $CURRENT_DS --maxh 3 --depth 2
 
 echo "========== CLEANUP =========="
 echo "Forcing garbage collection..."
