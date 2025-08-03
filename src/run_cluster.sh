@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=5          # 5 cores per dataset
 #SBATCH --mem=200G                 # 200GB ram per dataset
 #SBATCH --gres=gpu:tesla_v100:1    # 1 GPU per dataset
-#SBATCH --array=1-24%16            # 24 datasets, max 16 concurrent (4 nodes × 4 GPUs)
+#SBATCH --array=1-23%16            # 24 datasets, max 16 concurrent (4 nodes × 4 GPUs)
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.log
 
