@@ -5,8 +5,11 @@
     "" One day I'll give you my heart ,When it's not in two" - PVRIS, Old Wounds
 
 Designed for cluster execution with:
-- 256GB RAM
-- 2x Tesla V100 GPUs
+- 4 nodes
+- each node 4 tasks
+- each task 5 cpu cores
+- each task 200GB RAM
+- each task one Tesla V100 GPU
 - Large datasets (1000+ graphs) both for labelled and unlabeled graphs
 """
 import os
